@@ -1,11 +1,19 @@
 import React, { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 function Home() {
   const [cars, setCars] = useState([]);
   const [selectedCar, setSelectedCar] = useState(null);
 
-  // Fetch cars from backend
+  // AUTH (same logic as Navbar)
+  const token = localStorage.getItem("token");
+  const role = (localStorage.getItem("role") || "").toUpperCase();
+
+  const navigate = useNavigate();
+
+  // ================================
+  // FETCH CARS
+  // ================================
   useEffect(() => {
     fetch("http://localhost:8082/api/cars")
       .then((res) => res.json())
@@ -15,17 +23,15 @@ function Home() {
 
   return (
     <div>
-
-      {/* ===== HERO SECTION ===== */}
+      {/* ===== HERO ===== */}
       <div className="bg-dark text-white text-center py-5">
         <h1>Rent Your Dream Car</h1>
         <p className="lead">Affordable • Reliable • Easy Booking</p>
-
       </div>
 
-      {/* ===== CARS SECTION ===== */}
+      {/* ===== CARS ===== */}
       <div className="container mt-5">
-        <h2 className="text-center mb-4">Available Cars</h2>
+        <h2 className="text-center mb-4">Cars Available for Rent</h2>
 
         <div className="row">
           {cars.map((car) => (
@@ -40,9 +46,7 @@ function Home() {
 
                 <div className="card-body text-center">
                   <h5 className="card-title">{car.carName}</h5>
-                  <p className="card-text">
-                    ₹{car.pricePerDay} / day
-                  </p>
+                  <p>₹{car.pricePerDay} / day</p>
 
                   <button
                     className="btn btn-outline-primary btn-sm me-2"
@@ -54,12 +58,11 @@ function Home() {
                   </button>
 
                   <Link
-  to={`/book/${car.id}`}
-  className="btn btn-primary btn-sm"
->
-  Rent Now
-</Link>
-
+                    to={`/book/${car.id}`}
+                    className="btn btn-primary btn-sm"
+                  >
+                    Rent Now
+                  </Link>
                 </div>
               </div>
             </div>
@@ -68,20 +71,13 @@ function Home() {
       </div>
 
       {/* ===== MODAL ===== */}
-      <div
-        className="modal fade"
-        id="carModal"
-        tabIndex="-1"
-        aria-hidden="true"
-      >
+      <div className="modal fade" id="carModal" tabIndex="-1">
         <div className="modal-dialog modal-dialog-centered">
           <div className="modal-content">
             {selectedCar && (
               <>
                 <div className="modal-header">
-                  <h5 className="modal-title">
-                    {selectedCar.carName}
-                  </h5>
+                  <h5 className="modal-title">{selectedCar.carName}</h5>
                   <button
                     type="button"
                     className="btn-close"
@@ -106,12 +102,20 @@ function Home() {
                 </div>
 
                 <div className="modal-footer">
-                  <Link
-                    to="/login"
-                    className="btn btn-success"
-                  >
-                    Login to Rent
-                  </Link>
+                  {token && role === "CUSTOMER" ? (
+                    <button
+                      className="btn btn-success"
+                      data-bs-dismiss="modal"
+                      onClick={() => navigate(`/book/${selectedCar.id}`)}
+                    >
+                      Rent Now
+                    </button>
+                  ) : (
+                    <Link to="/login" className="btn btn-success">
+                      Login to Rent
+                    </Link>
+                  )}
+
                   <button
                     type="button"
                     className="btn btn-secondary"

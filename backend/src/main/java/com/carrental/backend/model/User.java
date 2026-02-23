@@ -24,12 +24,24 @@ public class User {
     @Size(min = 6, message = "Password must be at least 6 characters")
     private String password;
 
+    /**
+     * Roles:
+     * ADMIN  -> system admin
+     * DEALER -> car owner
+     * USER   -> customer
+     */
     private String role;
+
+    /**
+     * Used mainly for DEALER
+     * Admin can enable / disable dealers
+     */
+    private boolean active = true;
 
     // Default constructor (REQUIRED by Spring)
     public User() {}
 
-    // Getters and Setters
+    // -------- Getters & Setters --------
 
     public String getId() {
         return id;
@@ -69,5 +81,13 @@ public class User {
 
     public void setRole(String role) {
         this.role = role;
+    }
+
+    public boolean isActive() {
+        return active;
+    }
+
+    public void setActive(boolean active) {
+        this.active = active;
     }
 }

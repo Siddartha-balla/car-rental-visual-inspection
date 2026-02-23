@@ -14,24 +14,42 @@ public class Booking {
     @Id
     private String id;
 
+    // -------- User Info --------
     private String userEmail;
+
+    // -------- Car Info --------
     private String carId;
     private String carName;
 
+    // -------- Dealer Info (NEW) --------
+    /**
+     * Dealer who owns the car and performs inspection
+     */
+    private String dealerId;
+    private String dealerName;
+
+    // -------- Booking Duration --------
     private LocalDate startDate;
     private LocalDate endDate;
 
     private double totalPrice;
-    private String status; // BOOKED, ONGOING, COMPLETED, DAMAGE_DETECTED
 
-    // 📸 Inspection images
-    private List<String> pickupImages;   // admin before rental
-    private List<String> returnImages;   // admin after return
+    /**
+     * BOOKED        -> user booked, pickup pending
+     * ONGOING       -> pickup inspection done by dealer
+     * COMPLETED     -> return inspection done, no damage
+     * DAMAGE_FOUND  -> damage detected on return
+     */
+    private String status;
 
-    // 🤖 ML results
+    // -------- Inspection Images (Dealer uploads) --------
+    private List<String> pickupImages;   // dealer before rental
+    private List<String> returnImages;   // dealer after return
+
+    // -------- ML Results --------
     private String mlResult;             // OK / DAMAGE
-    private double damageScore;          // severity score from ML
+    private double damageScore;          // severity score
 
-    // 💰 Penalty (NEW)
-    private double penaltyAmount;        // calculated based on severity
+    // -------- Penalty --------
+    private double penaltyAmount;
 }

@@ -1,17 +1,14 @@
 package com.carrental.backend.controller;
 
-import java.io.File;
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.util.List;
 
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.multipart.MultipartFile;
 
 import com.carrental.backend.model.Car;
+import com.carrental.backend.model.User;
 import com.carrental.backend.repository.CarRepository;
+import com.carrental.backend.repository.UserRepository;
 
 @RestController
 @RequestMapping("/api/admin/cars")
@@ -19,58 +16,70 @@ import com.carrental.backend.repository.CarRepository;
 public class AdminCarController {
 
     private final CarRepository carRepository;
+    private final UserRepository userRepository;
 
-    public AdminCarController(CarRepository carRepository) {
+    public AdminCarController(
+            CarRepository carRepository,
+            UserRepository userRepository
+    ) {
         this.carRepository = carRepository;
+        this.userRepository = userRepository;
     }
 
-    // 📌 Folder where images will be stored
-    private static final String UPLOAD_DIR =
-            "uploads/cars/";
+    // ==================================================
+    // ✅ ADMIN: VIEW ALL CARS
+    // ==================================================
+    @GetMapping
+    public ResponseEntity<List<Car>> getAllCars() {
+        return ResponseEntity.ok(carRepository.findAll());
+    }
 
-    @PostMapping
-    public ResponseEntity<?> addCar(
-            @RequestParam String carName,
-            @RequestParam String brand,
-            @RequestParam String model,
-            @RequestParam String fuelType,
-            @RequestParam String transmission,
-            @RequestParam int seats,
-            @RequestParam double pricePerDay,
-            @RequestParam MultipartFile image
+    // ==================================================
+    // ✅ ADMIN: ASSIGN / REASSIGN CAR TO DEALER
+    // ==================================================
+    @PutMapping("/{carId}/assign/{dealerId}")
+    public ResponseEntity<?> assignCarToDealer(
+            @PathVariable String carId,
+            @PathVariable String dealerId
     ) {
-        try {
-            // ✅ Create directory if not exists
-            File uploadDir = new File(UPLOAD_DIR);
-            if (!uploadDir.exists()) {
-                uploadDir.mkdirs();
-            }
+        Car car = carRepository.findById(carId)
+                .orElseThrow(() -> new RuntimeException("Car not found"));
 
-            // ✅ Save image
-            String fileName = image.getOriginalFilename();
-            Path filePath = Paths.get(UPLOAD_DIR + fileName);
-            Files.write(filePath, image.getBytes());
+        User dealer = userRepository.findById(dealerId)
+                .orElseThrow(() -> new RuntimeException("Dealer not found"));
 
-            // ✅ Save car details
-            Car car = new Car();
-            car.setCarName(carName);
-            car.setBrand(brand);
-            car.setModel(model);
-            car.setFuelType(fuelType);
-            car.setTransmission(transmission);
-            car.setSeats(seats);
-            car.setPricePerDay(pricePerDay);
-
-            // VERY IMPORTANT
-            car.setImageUrl(fileName);
-
-            carRepository.save(car);
-
-            return ResponseEntity.ok("Car added successfully");
-
-        } catch (IOException e) {
-            return ResponseEntity.internalServerError()
-                    .body("Error saving car");
+        if (!"DEALER".equals(dealer.getRole())) {
+            return ResponseEntity.badRequest()
+                    .body("User is not a dealer");
         }
+
+        if (!dealer.isActive()) {
+            return ResponseEntity.badRequest()
+                    .body("Dealer is disabled");
+        }
+
+        car.setDealerId(dealer.getId());
+        car.setDealerName(dealer.getName());
+
+        carRepository.save(car);
+
+        return ResponseEntity.ok("Car assigned to dealer successfully");
+    }
+
+    // ==================================================
+    // ✅ ADMIN: ENABLE / DISABLE CAR
+    // ==================================================
+    @PutMapping("/{carId}/availability")
+    public ResponseEntity<?> updateAvailability(
+            @PathVariable String carId,
+            @RequestParam boolean available
+    ) {
+        Car car = carRepository.findById(carId)
+                .orElseThrow(() -> new RuntimeException("Car not found"));
+
+        car.setAvailable(available);
+        carRepository.save(car);
+
+        return ResponseEntity.ok("Car availability updated");
     }
 }

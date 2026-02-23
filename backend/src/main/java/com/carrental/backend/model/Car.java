@@ -2,6 +2,7 @@ package com.carrental.backend.model;
 
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+
 import lombok.Data;
 
 @Data
@@ -11,6 +12,7 @@ public class Car {
     @Id
     private String id;
 
+    // -------- Car Details --------
     private String carName;
     private String brand;
     private String model;
@@ -19,5 +21,14 @@ public class Car {
     private int seats;
     private double pricePerDay;
     private String imageUrl;
+
+    // -------- Availability --------
     private boolean available = true;
+
+    // -------- Dealer Ownership --------
+    /**
+     * Dealer (User with role DEALER) who owns this car
+     */
+    private String dealerId;
+    private String dealerName; // optional (for quick display)
 }

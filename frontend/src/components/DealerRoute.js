@@ -1,7 +1,7 @@
 import React from "react";
 import { Navigate } from "react-router-dom";
 
-function AdminRoute({ children }) {
+function DealerRoute({ children }) {
   const token = localStorage.getItem("token");
   const role = localStorage.getItem("role");
 
@@ -10,13 +10,13 @@ function AdminRoute({ children }) {
     return <Navigate to="/login" replace />;
   }
 
-  // 🚫 Not admin
-  if (role !== "ADMIN") {
+  // 🚫 Not dealer
+  if (role !== "DEALER") {
     return <Navigate to="/" replace />;
   }
 
-  // ✅ Admin allowed
+  // ✅ Dealer allowed
   return children;
 }
 
-export default AdminRoute;
+export default DealerRoute;

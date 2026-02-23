@@ -3,7 +3,10 @@ package com.carrental.backend.controller;
 import com.carrental.backend.service.DamageInspectionService;
 import com.carrental.backend.dto.DamagePredictionResponse;
 import com.carrental.backend.model.Booking;
+import com.carrental.backend.model.User;
 import com.carrental.backend.repository.BookingRepository;
+import com.carrental.backend.repository.UserRepository;
+import com.carrental.backend.security.JwtUtil;
 
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
@@ -15,7 +18,6 @@ import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 
 import java.io.File;
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -29,6 +31,8 @@ public class InspectionController {
 
     private final BookingRepository bookingRepository;
     private final DamageInspectionService damageInspectionService;
+    private final UserRepository userRepository;
+    private final JwtUtil jwtUtil;
 
     // 📂 Image storage directories
     private static final String PICKUP_DIR = "uploads/inspection/pickup/";
@@ -36,16 +40,20 @@ public class InspectionController {
 
     public InspectionController(
             BookingRepository bookingRepository,
-            DamageInspectionService damageInspectionService
+            DamageInspectionService damageInspectionService,
+            UserRepository userRepository,
+            JwtUtil jwtUtil
     ) {
         this.bookingRepository = bookingRepository;
         this.damageInspectionService = damageInspectionService;
+        this.userRepository = userRepository;
+        this.jwtUtil = jwtUtil;
     }
 
     // ==================================================
     // 🔥 ML VALIDATION (CAR CHECK ONLY – SAFE)
     // ==================================================
-    private boolean validateImageWithML(MultipartFile image, String side) throws IOException {
+    private boolean validateImageWithML(MultipartFile image, String side) throws Exception {
 
         String flaskUrl = "http://localhost:5000/validate-image";
         RestTemplate restTemplate = new RestTemplate();
@@ -68,24 +76,29 @@ public class InspectionController {
             restTemplate.postForEntity(flaskUrl, request, String.class);
             return true;
         } catch (HttpClientErrorException.BadRequest e) {
-            // ❌ HARD FAIL ONLY IF NOT A CAR
-            return false;
+            return false; // not a car
         } catch (Exception e) {
-            // ⚠️ Any other ML uncertainty → allow upload
-//            System.out.println("⚠ ML side check uncertain for: " + side);
-            return true;
+            return true; // ML uncertainty → allow
         }
     }
 
     // ==================================================
-    // ✅ PICKUP INSPECTION (ADMIN)
+    // ✅ DEALER: PICKUP INSPECTION
     // BOOKED → ONGOING
     // ==================================================
     @PostMapping("/pickup/{bookingId}")
     public ResponseEntity<?> pickupInspection(
             @PathVariable String bookingId,
-            @RequestParam("images") MultipartFile[] images
+            @RequestParam("images") MultipartFile[] images,
+            @RequestHeader("Authorization") String authHeader
     ) throws Exception {
+
+        User dealer = authenticateDealer(authHeader);
+        Booking booking = getDealerBooking(bookingId, dealer);
+
+        if (!"BOOKED".equals(booking.getStatus())) {
+            return ResponseEntity.badRequest().body("Invalid booking state");
+        }
 
         if (images.length != 4) {
             return ResponseEntity.badRequest()
@@ -94,20 +107,12 @@ public class InspectionController {
 
         String[] sides = {"FRONT", "LEFT", "BACK", "RIGHT"};
 
-        // 🔥 ML VALIDATION (BEFORE SAVE)
         for (int i = 0; i < 4; i++) {
-            boolean valid = validateImageWithML(images[i], sides[i]);
-            if (!valid) {
-                return ResponseEntity
-                        .badRequest()
+            if (!validateImageWithML(images[i], sides[i])) {
+                return ResponseEntity.badRequest()
                         .body("Invalid image for side: " + sides[i]);
-
             }
         }
-
-
-        Booking booking = bookingRepository.findById(bookingId)
-                .orElseThrow(() -> new RuntimeException("Booking not found"));
 
         List<String> savedImages = saveImages(images, PICKUP_DIR);
 
@@ -119,14 +124,21 @@ public class InspectionController {
     }
 
     // ==================================================
-    // ✅ RETURN INSPECTION (ADMIN)
-    // Uses REAL ML DAMAGE MODEL
+    // ✅ DEALER: RETURN INSPECTION
     // ==================================================
     @PostMapping("/return/{bookingId}")
     public ResponseEntity<?> returnInspection(
             @PathVariable String bookingId,
-            @RequestParam("images") MultipartFile[] images
+            @RequestParam("images") MultipartFile[] images,
+            @RequestHeader("Authorization") String authHeader
     ) throws Exception {
+
+        User dealer = authenticateDealer(authHeader);
+        Booking booking = getDealerBooking(bookingId, dealer);
+
+        if (!"ONGOING".equals(booking.getStatus())) {
+            return ResponseEntity.badRequest().body("Invalid booking state");
+        }
 
         if (images.length != 4) {
             return ResponseEntity.badRequest()
@@ -135,47 +147,36 @@ public class InspectionController {
 
         String[] sides = {"FRONT", "LEFT", "BACK", "RIGHT"};
 
-        // 🔥 ML VALIDATION (CAR CHECK)
         for (int i = 0; i < 4; i++) {
-            boolean valid = validateImageWithML(images[i], sides[i]);
-            if (!valid) {
-                return ResponseEntity
-                        .badRequest()
+            if (!validateImageWithML(images[i], sides[i])) {
+                return ResponseEntity.badRequest()
                         .body("Invalid image for side: " + sides[i]);
-
             }
         }
 
-
-        Booking booking = bookingRepository.findById(bookingId)
-                .orElseThrow(() -> new RuntimeException("Booking not found"));
-
         List<String> savedImages = saveImages(images, RETURN_DIR);
 
-        StringBuilder damageSummary = new StringBuilder();
         boolean anyDamage = false;
         double maxSeverity = 0;
+        StringBuilder damageSummary = new StringBuilder();
 
-        // 🔥 SIDE-WISE DAMAGE COMPARISON
         for (int i = 0; i < 4; i++) {
 
-            File beforeImage = new File(booking.getPickupImages().get(i));
-            File afterImage = new File(savedImages.get(i));
+            File before = new File(booking.getPickupImages().get(i));
+            File after = new File(savedImages.get(i));
 
             DamagePredictionResponse response =
-                    damageInspectionService.inspectDamage(beforeImage, afterImage);
+                    damageInspectionService.inspectDamage(before, after);
 
             double probability = response.getDamage_probability();
             double severity = response.getSeverity();
 
             boolean damaged = probability > 0.5 && severity > 15;
 
-
-            damageSummary.append(
-                    sides[i] + "=" +
-                            (damaged ? "DAMAGED" : "GOOD") +
-                            "(" + Math.round(severity) + ");"
-            );
+            damageSummary.append(sides[i])
+                    .append("=")
+                    .append(damaged ? "DAMAGED" : "GOOD")
+                    .append("(").append(Math.round(severity)).append(");");
 
             if (damaged) {
                 anyDamage = true;
@@ -183,13 +184,11 @@ public class InspectionController {
             }
         }
 
-        // ✅ FINAL RESULT
-        String overall = anyDamage ? "OVERALL=DAMAGED;" : "OVERALL=GOOD;";
-        String finalResult = overall + damageSummary;
-
         booking.setReturnImages(savedImages);
-        booking.setMlResult(finalResult);
         booking.setDamageScore(maxSeverity);
+        booking.setMlResult(
+                (anyDamage ? "OVERALL=DAMAGED;" : "OVERALL=GOOD;") + damageSummary
+        );
 
         if (anyDamage) {
             booking.setStatus("DAMAGE_DETECTED");
@@ -201,7 +200,37 @@ public class InspectionController {
 
         bookingRepository.save(booking);
 
-        return ResponseEntity.ok(finalResult);
+        return ResponseEntity.ok(booking.getMlResult());
+    }
+
+    // ==================================================
+    // 🔐 AUTH HELPERS
+    // ==================================================
+    private User authenticateDealer(String authHeader) {
+
+        String token = authHeader.substring(7);
+        String email = jwtUtil.extractEmail(token);
+
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        if (!"DEALER".equals(user.getRole()) || !user.isActive()) {
+            throw new RuntimeException("Dealer access only");
+        }
+
+        return user;
+    }
+
+    private Booking getDealerBooking(String bookingId, User dealer) {
+
+        Booking booking = bookingRepository.findById(bookingId)
+                .orElseThrow(() -> new RuntimeException("Booking not found"));
+
+        if (!dealer.getId().equals(booking.getDealerId())) {
+            throw new RuntimeException("Access denied");
+        }
+
+        return booking;
     }
 
     // ==================================================

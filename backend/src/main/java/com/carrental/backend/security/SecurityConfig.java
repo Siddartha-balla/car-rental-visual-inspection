@@ -38,39 +38,55 @@ public class SecurityConfig {
                         session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
                 )
 
-                // 🔐 AUTHORIZATION RULES (ONLY ONCE)
+                // 🔐 AUTHORIZATION RULES
                 .authorizeHttpRequests(auth -> auth
 
-                        // ✅ PUBLIC ENDPOINTS
+                        // ===== PUBLIC =====
                         .requestMatchers(
                                 "/api/users/login",
                                 "/api/users/register",
-                                "/api/cars/**",
+                                "/api/dealers/register",
                                 "/uploads/**",
                                 "/error"
                         ).permitAll()
 
-                        // ✅ PREFLIGHT (CORS)
+                        // View cars (GET only)
+                        .requestMatchers(
+                                org.springframework.http.HttpMethod.GET,
+                                "/api/cars/**"
+                        ).permitAll()
+
+                        // CORS preflight
                         .requestMatchers(
                                 org.springframework.http.HttpMethod.OPTIONS, "/**"
                         ).permitAll()
 
-                        // 🔐 ADMIN ONLY
+                        // ===== ADMIN =====
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         .requestMatchers("/api/bookings/admin").hasRole("ADMIN")
-                        .requestMatchers("/api/inspection/**").hasRole("ADMIN")
 
-                        // 🔐 USER (LOGIN REQUIRED)
+                        // ===== DEALER =====
+                        .requestMatchers(
+                                "/api/inspection/**",
+                                "/api/bookings/dealer"
+                        ).hasRole("DEALER")
+
+                        .requestMatchers(
+                                org.springframework.http.HttpMethod.POST,
+                                "/api/cars/**"
+                        ).hasAnyRole("DEALER", "ADMIN")
+
+                        // ===== USER (AUTHENTICATED) =====
                         .requestMatchers("/api/bookings/**").authenticated()
 
-                        // 🔐 EVERYTHING ELSE
+                        // ===== EVERYTHING ELSE =====
                         .anyRequest().authenticated()
                 )
 
                 // JWT FILTER
                 .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
 
-                // DISABLE DEFAULT LOGIN
+                // Disable default login mechanisms
                 .httpBasic(Customizer.withDefaults())
                 .formLogin(form -> form.disable());
 

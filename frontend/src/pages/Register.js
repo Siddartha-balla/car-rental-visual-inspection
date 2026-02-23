@@ -47,7 +47,7 @@ function Register() {
         throw new Error(text || "Registration failed");
       }
 
-      alert("Registration successful! Please login.");
+      alert("User registration successful! Please login.");
       navigate("/login");
 
     } catch (error) {
@@ -60,7 +60,10 @@ function Register() {
   return (
     <div className="container d-flex justify-content-center align-items-center vh-100">
       <div className="card p-4 shadow" style={{ width: "380px" }}>
-        <h3 className="text-center mb-3">Register</h3>
+        <h3 className="text-center mb-1">User Registration</h3>
+        <p className="text-center text-muted mb-3" style={{ fontSize: "14px" }}>
+          For customers who want to rent cars
+        </p>
 
         <form onSubmit={handleSubmit}>
           <div className="mb-3">
