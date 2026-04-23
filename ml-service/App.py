@@ -1,195 +1,184 @@
-import torch
 from flask import Flask, request, jsonify
-from PIL import Image
-from torchvision import transforms
-import torchvision.models as models
-import torch.nn as nn
-import torch.nn.functional as F
+from inference_sdk import InferenceHTTPClient
+import cv2
+import tempfile
 
-# ==================================================
-# 🔹 FLASK APP
-# ==================================================
 app = Flask(__name__)
-device = torch.device("cpu")
 
 # ==================================================
-# 🔹 CAR VALIDATION MODEL (ImageNet – CAR CHECK ONLY)
+# ROBOFLOW CLIENT
 # ==================================================
-from torchvision.models import resnet18, ResNet18_Weights
-
-val_model = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
-val_model.eval()
-
-IMAGENET_LABELS = ResNet18_Weights.IMAGENET1K_V1.meta["categories"]
-
-CAR_KEYWORDS = [
-    "car", "sports car", "pickup", "jeep",
-    "taxi", "minivan", "limousine", "convertible"
-]
-
-# ==================================================
-# 🔹 DAMAGE DETECTION MODEL (SIAMESE + CBAM)
-# ==================================================
-class CBAM(nn.Module):
-    def __init__(self, channels, reduction=16):
-        super().__init__()
-
-        self.avg = nn.AdaptiveAvgPool2d(1)
-        self.max = nn.AdaptiveMaxPool2d(1)
-
-        self.fc = nn.Sequential(
-            nn.Conv2d(channels, channels // reduction, 1, bias=False),
-            nn.ReLU(),
-            nn.Conv2d(channels // reduction, channels, 1, bias=False)
-        )
-
-        self.sigmoid = nn.Sigmoid()
-
-        self.spatial = nn.Sequential(
-            nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False),
-            nn.Sigmoid()
-        )
-
-    def forward(self, x):
-        avg = self.fc(self.avg(x))
-        max_ = self.fc(self.max(x))
-        x = x * self.sigmoid(avg + max_)
-
-        avg_out = torch.mean(x, dim=1, keepdim=True)
-        max_out, _ = torch.max(x, dim=1, keepdim=True)
-        x = x * self.spatial(torch.cat([avg_out, max_out], dim=1))
-
-        return x
-
-
-class SiameseResNetCBAM(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-        resnet = models.resnet18(weights=None)
-        self.encoder = nn.Sequential(*list(resnet.children())[:-2])
-
-        self.cbam = CBAM(512)
-        self.gap = nn.AdaptiveAvgPool2d(1)
-
-        self.classifier = nn.Sequential(
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(256, 1)
-        )
-
-        self.regressor = nn.Sequential(
-            nn.Linear(512, 128),
-            nn.ReLU(),
-            nn.Linear(128, 1)
-        )
-
-    def forward(self, img1, img2):
-        f1 = self.encoder(img1)
-        f2 = self.encoder(img2)
-
-        diff = torch.abs(f1 - f2)
-        diff = self.cbam(diff)
-
-        diff = self.gap(diff)
-        diff = diff.view(diff.size(0), -1)
-
-        damage = self.classifier(diff)
-        severity = self.regressor(diff)
-
-        return damage, severity
-
-
-# ==================================================
-# 🔹 LOAD TRAINED DAMAGE MODEL
-# ==================================================
-damage_model = SiameseResNetCBAM().to(device)
-damage_model.load_state_dict(
-    torch.load("car_damage_siamese_cbam.pth", map_location=device)
+CLIENT = InferenceHTTPClient(
+    api_url="https://serverless.roboflow.com",
+    api_key="1OLUxevLAhoute2s2B8r"
 )
-damage_model.eval()
+
+MODEL_ID = "car-damage-detection-t0g92/3"
 
 # ==================================================
-# 🔹 IMAGE TRANSFORM (SHARED)
+# THRESHOLDS
 # ==================================================
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225]
-    )
-])
+MODEL_CONF_THRESHOLD = 0.7
+CONF_DIFF_THRESHOLD = 0.15
+IOU_THRESHOLD = 0.5
+
 
 # ==================================================
-# 🔹 ROUTES
+# IoU FUNCTION
+# ==================================================
+def box_iou(box1, box2):
+
+    x1, y1, w1, h1 = box1
+    x2, y2, w2, h2 = box2
+
+    ax1 = x1 - w1 / 2
+    ay1 = y1 - h1 / 2
+    ax2 = x1 + w1 / 2
+    ay2 = y1 + h1 / 2
+
+    bx1 = x2 - w2 / 2
+    by1 = y2 - h2 / 2
+    bx2 = x2 + w2 / 2
+    by2 = y2 + h2 / 2
+
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+
+    inter_area = max(0, inter_x2 - inter_x1) * max(0, inter_y2 - inter_y1)
+
+    area_a = (ax2 - ax1) * (ay2 - ay1)
+    area_b = (bx2 - bx1) * (by2 - by1)
+
+    union = area_a + area_b - inter_area
+
+    if union == 0:
+        return 0
+
+    return inter_area / union
+
+
+# ==================================================
+# HOME
 # ==================================================
 @app.route("/")
 def home():
-    return "Car Inspection API running on port 5000"
+    return "Car Damage Detection API Running"
 
 
-# --------------------------------------------------
-# ✅ IMAGE VALIDATION (HARD = CAR ONLY, SIDE = SOFT)
-# --------------------------------------------------
-@app.route("/validate-image", methods=["POST"])
-def validate_image():
-    image = Image.open(request.files["image"]).convert("RGB")
-    side = request.form.get("side", "").lower()
-
-    x = transform(image).unsqueeze(0)
-
-    with torch.no_grad():
-        logits = val_model(x)
-        probs = F.softmax(logits, dim=1)
-        top5 = torch.topk(probs, 5)
-
-    labels = [IMAGENET_LABELS[i] for i in top5.indices[0]]
-
-    # 🔴 HARD CHECK: MUST BE CAR
-    if not any(
-        any(k in label.lower() for k in CAR_KEYWORDS)
-        for label in labels
-    ):
-        return jsonify({
-            "valid": False,
-            "message": "Please upload image of a car"
-        }), 400
-
-    # 🟡 SOFT CHECK: SIDE (NO REJECTION)
-    return jsonify({
-        "valid": True,
-        "side": side,
-        "detected_labels": labels
-    })
-
-
-# --------------------------------------------------
-# ✅ DAMAGE PREDICTION
-# --------------------------------------------------
+# ==================================================
+# DAMAGE PREDICTION
+# ==================================================
 @app.route("/predict", methods=["POST"])
 def predict():
-    before = Image.open(request.files["before"]).convert("RGB")
-    after = Image.open(request.files["after"]).convert("RGB")
 
-    b = transform(before).unsqueeze(0)
-    a = transform(after).unsqueeze(0)
+    before_file = request.files["before"]
+    after_file = request.files["after"]
 
-    with torch.no_grad():
-        dmg, sev = damage_model(b, a)
-        damage_prob = torch.sigmoid(dmg).item()
-        severity = sev.item()
+    before_path = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
+    after_path = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
 
+    before_file.save(before_path)
+    after_file.save(after_path)
+
+    # ----------------------------------------------
+    # RUN INFERENCE
+    # ----------------------------------------------
+    before = CLIENT.infer(before_path, model_id=MODEL_ID)
+    after = CLIENT.infer(after_path, model_id=MODEL_ID)
+
+    print("Before predictions:", before["predictions"])
+    print("After predictions:", after["predictions"])
+
+    # ----------------------------------------------
+    # FILTER LOW CONFIDENCE
+    # ----------------------------------------------
+    before_preds = [
+        p for p in before["predictions"]
+        if p["confidence"] >= MODEL_CONF_THRESHOLD
+    ]
+
+    after_preds = [
+        p for p in after["predictions"]
+        if p["confidence"] >= MODEL_CONF_THRESHOLD
+    ]
+
+    # ----------------------------------------------
+    # DETECT NEW DAMAGE
+    # ----------------------------------------------
+    new_damages = []
+
+    for after_box in after_preds:
+
+        is_new = True
+
+        for before_box in before_preds:
+
+            iou = box_iou(
+                (after_box["x"], after_box["y"], after_box["width"], after_box["height"]),
+                (before_box["x"], before_box["y"], before_box["width"], before_box["height"])
+            )
+
+            if iou > IOU_THRESHOLD:
+
+                if after_box["class"] == before_box["class"]:
+
+                    conf_diff = abs(
+                        after_box["confidence"] - before_box["confidence"]
+                    )
+
+                    if conf_diff < CONF_DIFF_THRESHOLD:
+                        is_new = False
+                        break
+
+        if is_new:
+            new_damages.append(after_box)
+
+    damage_flag = len(new_damages) > 0
+
+    # ----------------------------------------------
+    # DRAW DAMAGE ON IMAGE
+    # ----------------------------------------------
+    img = cv2.imread(after_path)
+
+    for p in new_damages:
+
+        x = int(p["x"])
+        y = int(p["y"])
+        w = int(p["width"])
+        h = int(p["height"])
+
+        x1 = int(x - w / 2)
+        y1 = int(y - h / 2)
+        x2 = int(x + w / 2)
+        y2 = int(y + h / 2)
+
+        label = p["class"]
+
+        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 3)
+
+        cv2.putText(
+            img,
+            label,
+            (x1, y1 - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 0, 255),
+            2
+        )
+
+    # ----------------------------------------------
+    # RESPONSE
+    # ----------------------------------------------
     return jsonify({
-        "damage": damage_prob > 0.5,
-        "damage_probability": round(damage_prob, 3),
-        "severity": round(severity, 1)
+        "damage": damage_flag,
+        "new_damage_classes": [d["class"] for d in new_damages]
     })
 
 
 # ==================================================
-# 🔹 RUN SERVER
+# RUN SERVER
 # ==================================================
 if __name__ == "__main__":
     app.run(port=5000, debug=False)
